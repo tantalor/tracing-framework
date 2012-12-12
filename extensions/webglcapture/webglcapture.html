@@ -2,8 +2,15 @@
 <html>
   <head>
     <title>WebGL Capture Replay Tool</title>
+    <!--<script src="../../build-out/wtf_ui_js_compiled.js"></script>-->
+    <script>window.CLOSURE_NO_DEPS = true;</script>
+    <script src="../../third_party/closure-library/closure/goog/base.js"></script>
+    <script src="../../wtf_js-deps.js"></script>
   </head>
   <body>
+    <script>
+      goog.require('wtf.analysis');
+    </script>
     <div>
       <input id="frameSlider" type="range" min="0" max="0">
       <a id="playButton" href="">Play</a>
@@ -14,221 +21,721 @@
     </div>
   </body>
   <script>
-    // Record history from scripts.
-    var history = [];
-    var minFrameNumber = Number.MAX_VALUE;
-    var maxFrameNumber = Number.MIN_VALUE;
-    var nextFrameNumber = 0;
-    function intraFrame(fn, resources) {
-      history.push({
-        type: 'I',
-        fn: fn,
-        resources: resources,
-        frameNumber: nextFrameNumber
-      });
-    };
-    function frame(frameNumber, startTime, fn, resources, endTime) {
-      history.push({
-        type: 'F',
-        fn: fn,
-        resources: resources,
-        frameNumber: frameNumber,
-        startTime: startTime,
-        endTime: endTime
-      });
-      minFrameNumber = Math.min(minFrameNumber, frameNumber);
-      maxFrameNumber = Math.max(maxFrameNumber, frameNumber);
-      nextFrameNumber = frameNumber + 1;
-    };
 
-    var statusEl = document.getElementById('status');
-    function setStatus(ready, message) {
-      statusEl.innerText = message;
-      frameSlider.disabled = !ready;
-    };
+// Record history from scripts.
+var history = [];
+var minFrameNumber = Number.MAX_VALUE;
+var maxFrameNumber = Number.MIN_VALUE;
+var nextFrameNumber = 0;
+function intraFrame(fn, resources) {
+  history.push({
+    type: 'I',
+    fn: fn,
+    resources: resources,
+    frameNumber: nextFrameNumber
+  });
+};
+function frame(frameNumber, startTime, fn, resources, endTime) {
+  history.push({
+    type: 'F',
+    fn: fn,
+    resources: resources,
+    frameNumber: frameNumber,
+    startTime: startTime,
+    endTime: endTime
+  });
+  minFrameNumber = Math.min(minFrameNumber, frameNumber);
+  maxFrameNumber = Math.max(maxFrameNumber, frameNumber);
+  nextFrameNumber = frameNumber + 1;
+};
 
-    var frameSlider = document.getElementById('frameSlider');
-    frameSlider.onchange = function() {
-      var targetFrameNumber = Number(frameSlider.value);
-      if (targetFrameNumber < replayState.frameNumber) {
-        frameSlider.value = replayState.frameNumber;
-        return;
-      }
-      replay(targetFrameNumber);
-    };
+var statusEl = document.getElementById('status');
+function setStatus(ready, message) {
+  statusEl.innerText = message;
+  frameSlider.disabled = !ready;
+};
 
-    var replayState = {
-      frameNumber: -1,
-      ctxs: {},
-      objs: {
-        0: null
-      }
-    };
+var frameSlider = document.getElementById('frameSlider');
+frameSlider.onchange = function() {
+  var targetFrameNumber = Number(frameSlider.value);
+  if (targetFrameNumber < replayState.frameNumber) {
+    frameSlider.value = replayState.frameNumber;
+    return;
+  }
+  replay(targetFrameNumber);
+};
 
-    var playButton = document.getElementById('playButton');
-    playButton.onclick = function(e) {
-      e.preventDefault();
-      play();
-    };
-    function play() {
-      function tick() {
-        var frameNumber = replayState.frameNumber + 1;
-        frameSlider.value = frameNumber;
-        replay(frameNumber);
-        if (frameNumber < maxFrameNumber) {
-          window.webkitRequestAnimationFrame(tick);
-        }
-      };
+var replayState = {
+  frameNumber: -1,
+  ctxs: {},
+  objs: {
+    0: null
+  }
+};
 
+var playButton = document.getElementById('playButton');
+playButton.onclick = function(e) {
+  e.preventDefault();
+  play();
+};
+function play() {
+  function tick() {
+    var frameNumber = replayState.frameNumber + 1;
+    frameSlider.value = frameNumber;
+    replay(frameNumber);
+    if (frameNumber < maxFrameNumber) {
       window.webkitRequestAnimationFrame(tick);
-    };
+    }
+  };
 
-    var resetButton = document.getElementById('resetButton');
-    resetButton.onclick = function(e) {
-      e.preventDefault();
-      reset();
-      frameSlider.value = 0;
-    };
-    function reset(callback) {
-      setStatus(false, 'Preparing resources...');
+  window.webkitRequestAnimationFrame(tick);
+};
 
-      frameSlider.min = minFrameNumber;
-      frameSlider.max = maxFrameNumber;
+var resetButton = document.getElementById('resetButton');
+resetButton.onclick = function(e) {
+  e.preventDefault();
+  reset();
+  frameSlider.value = 0;
+};
+function reset(callback) {
+  setStatus(false, 'Preparing resources...');
 
-      for (var key in replayState.objs) {
-        var obj = replayState.objs[key];
-        if (!obj) {
-          continue;
+  frameSlider.min = minFrameNumber;
+  frameSlider.max = maxFrameNumber;
+
+  for (var key in replayState.objs) {
+    var obj = replayState.objs[key];
+    if (!obj) {
+      continue;
+    }
+    var ctx = obj['__gl_ctx__'];
+    if (obj instanceof WebGLBuffer) {
+      ctx.deleteBuffer(obj);
+    } else if (obj instanceof WebGLFramebuffer) {
+      ctx.deleteFramebuffer(obj);
+    } else if (obj instanceof WebGLProgram) {
+      ctx.deleteProgram(obj);
+    } else if (obj instanceof WebGLRenderbuffer) {
+      ctx.deleteRenderbuffer(obj);
+    } else if (obj instanceof WebGLShader) {
+      ctx.deleteShader(obj);
+    } else if (obj instanceof WebGLTexture) {
+      ctx.deleteTexture(obj);
+    }
+  }
+
+  replayState.frameNumber = -1;
+  replayState.ctxs = {};
+  replayState.objs = {
+    0: null
+  };
+  replayState.resources = {};
+
+  setupResources(history, replayState.resources, callback);
+
+  var canvasRoot = document.getElementById('canvasRoot');
+  canvasRoot.innerHTML = '';
+};
+
+var pendingResourceCount = 0;
+function setupResources(history, resources, callback) {
+  function resourceCompleted(resourceId, value) {
+    resources[resourceId] = value;
+    pendingResourceCount--;
+    if (!pendingResourceCount) {
+      setStatus(true, 'Ready!');
+      if (callback) {
+        callback();
+      }
+    }
+  };
+  for (var n = 0; n < history.length; n++) {
+    var entry = history[n];
+    for (var i = 0; i < entry.resources.length; i++) {
+      var resource = entry.resources[i];
+      beginLoadingResource(resource, resourceCompleted);
+      pendingResourceCount++;
+    }
+  }
+  if (!pendingResourceCount) {
+    setStatus(true, 'Ready!');
+    if (callback) {
+      callback();
+    }
+  }
+};
+function beginLoadingResource(resource, callback) {
+  var blob = new Blob([resource.data], {
+    type: resource.mimeType
+  });
+  var url = webkitURL.createObjectURL(blob);
+  var img = new Image();
+  img.onerror = function() {
+    webkitURL.revokeObjectURL(url);
+    console.log('Unable to load resource: ', arguments);
+    callback(resource.id, null);
+  };
+  img.onload = function() {
+    webkitURL.revokeObjectURL(url);
+    callback(resource.id, img);
+  };
+  img.src = url;
+};
+
+function createContext(handle, attributes) {
+  var canvas = document.createElement('canvas');
+  canvas.width = 100;
+  canvas.height = 100;
+  canvasRoot.appendChild(canvas);
+  replayState.ctxs[handle] = canvas.getContext(
+      'experimental-webgl', attributes);
+};
+
+function reshapeContext(ctx, width, height) {
+  if (ctx.canvas.width == width &&
+      ctx.canvas.height == height) {
+    return;
+  }
+  ctx.canvas.width = width;
+  ctx.canvas.height = height;
+  ctx.viewport(0, 0, width, height);
+};
+
+function assignObject(ctx, obj) {
+  obj['__gl_ctx__'] = ctx;
+};
+
+function replay(targetFrameNumber) {
+  if (targetFrameNumber < replayState.frameNumber) {
+    reset(function() {
+      replay(targetFrameNumber);
+    });
+    return;
+  }
+  var startFrameNumber = replayState.frameNumber;
+  for (var n = 0; n < history.length; n++) {
+    var entry = history[n];
+    if (entry.frameNumber <= startFrameNumber) {
+      continue;
+    }
+    if (entry.frameNumber > targetFrameNumber) {
+      break;
+    }
+    entry.fn(replayState.ctxs, replayState.objs, replayState.resources);
+    replayState.frameNumber = entry.frameNumber;
+  }
+};
+
+setStatus(false, 'Loading trace...');
+var traceUrl = window.location.search.substr(1);
+if (!traceUrl.length) {
+  window.alert('No trace specified');
+  return;
+}
+var xhr = new XMLHttpRequest();
+xhr.open('GET', traceUrl, true);
+xhr.responseType = 'arraybuffer';
+xhr.send(null);
+xhr.onload = function() {
+  processTrace(new Uint8Array(xhr.response));
+};
+function processTrace(data) {
+  var currentCode = [];
+  function out(msg) {
+    currentCode.push(msg);
+  };
+  function flush() {
+    var source = currentCode.join('\n');
+    currentCode.length = 0;
+    eval(source);
+    // var fn = new Function([
+    //   'intraFrame',
+    //   'frame',
+    //   'createContext',
+    //   'reshapeContext'
+    // ], source);
+    // fn(intraFrame, frame, createContext, reshapeContext);
+  }
+
+  function pad(value, count) {
+    value = String(value);
+    if (count >= 0) {
+      while (value.length < count) {
+        value += ' ';
+      }
+    } else {
+      while (value.length < -count) {
+        value = ' ' + value;
+      }
+    }
+    return value;
+  };
+  function pad0(value, count) {
+    value = String(value);
+    while (value.length < count) {
+      value = '0' + value;
+    }
+    return value;
+  };
+  function formatTime(value) {
+    // Format time: 05:33:28.105.25530
+    var dt = new Date(value);
+    return '' +
+        pad0(dt.getHours(), 2) + ':' +
+        pad0(dt.getMinutes(), 2) + ':' +
+        pad0(dt.getSeconds(), 2) + '.' +
+        String((dt.getMilliseconds() / 1000).toFixed(3)).slice(2, 5) + '.' +
+        pad0(Math.floor((value - Math.floor(value)) * 10000), 4);
+  };
+
+  var argTable = buildArgTable_();
+
+  var frameStart = 0;
+  var frameNumber = 0;
+
+  var resources = [];
+  var nextResourceId = 0;
+
+  var currentContext = 0;
+
+  // ctxs = [gl, gl, gl, ...];
+  // objs = { handle : object };
+  // frame(number, startTime, fn, endTime);
+
+  var traceListener = wtf.analysis.createTraceListener({
+    'sourceAdded': function(timebase, contextInfo) {
+      frameStart = timebase;
+    },
+
+    'timing.frameStart': function(e) {
+      out('}, [' + resources.join(', ') + ']);');
+      resources.length = 0;
+      flush();
+      frameNumber = e.args['number'];
+      out('frame(' +
+          frameNumber + ', ' +
+          '"' + formatTime(e.time) + '"' +
+          ', function(ctxs, objs, resources) {');
+      out('  var result;');
+      out('  var gl = ctxs[' + currentContext + '];');
+      frameStart = e.time;
+    },
+    'timing.frameEnd': function(e) {
+      out('}, [' + resources.join(', ') + '], "' + formatTime(e.time) + '");');
+      resources.length = 0;
+      flush();
+      out('intraFrame(function(ctxs, objs, resources) {');
+      out('  var result;');
+      out('  var gl = ctxs[' + currentContext + '];');
+    },
+
+    'webglcapture.createContext': function(e) {
+      out('  createContext(' +
+          e.args['handle'] + ', ' + e.args['attributes'] + ')');
+    },
+
+    'webglcapture.setContext': function(e) {
+      currentContext = e.args['handle'];
+      out('  gl = ctxs[' + currentContext + '];');
+      out('  reshapeContext(gl, ' + e.args['width'] + ', ' + e.args['height'] + ');');
+    },
+
+    'custom': function(e) {
+      if (e instanceof wtf.analysis.ScopeEvent &&
+          e.eventType.name.indexOf('WebGLRenderingContext#') == 0) {
+        var callName = e.eventType.name.substr(22);
+        var offsetMs = pad(
+            '+' + ((e.time - frameStart) | 0) + 'ms', -6);
+
+        var argString = '';
+        switch (callName) {
+          case 'bufferData':
+            var size = e.args['size'];
+            var data = e.args['data'];
+            if (data.length != size) {
+              data = size;
+            } else {
+              data = 'new Uint8Array([' + data + '])';
+            }
+            argString = [
+              e.args['target'],
+              data,
+              e.args['usage']
+            ].join(', ');
+            break;
+          case 'texImage2D':
+            switch (e.args['dataType']) {
+              case 'pixels':
+                argString = [
+                  e.args['target'],
+                  e.args['level'],
+                  e.args['internalformat'],
+                  e.args['width'],
+                  e.args['height'],
+                  e.args['border'],
+                  e.args['format'],
+                  e.args['type'],
+                  'new Uint8Array([' + e.args['pixels'] + '])'
+                ].join(', ');
+                break;
+              case 'null':
+                argString = [
+                  e.args['target'],
+                  e.args['level'],
+                  e.args['internalformat'],
+                  e.args['width'],
+                  e.args['height'],
+                  e.args['border'],
+                  e.args['format'],
+                  e.args['type'],
+                  'null'
+                ].join(', ');
+                break;
+              default:
+                argString = [
+                  e.args['target'],
+                  e.args['level'],
+                  e.args['internalformat'],
+                  e.args['format'],
+                  e.args['type'],
+                  'resources[' + nextResourceId + ']'
+                ].join(', ');
+                resources.push(
+                    '{' +
+                    '  id: ' + nextResourceId + ',' +
+                    '  type: "image",' +
+                    '  mimeType: "' + e.args['dataType'] + '",' +
+                    '  data: new Uint8Array([' + e.args['pixels'] + '])' +
+                    '}');
+                nextResourceId++;
+                break;
+            }
+            break;
+          case 'texSubImage2D':
+            switch (e.args['dataType']) {
+              case 'pixels':
+                argString = [
+                  e.args['target'],
+                  e.args['level'],
+                  e.args['xoffset'],
+                  e.args['yoffset'],
+                  e.args['width'],
+                  e.args['height'],
+                  e.args['format'],
+                  e.args['type'],
+                  'new Uint8Array([' + e.args['pixels'] + '])'
+                ].join(', ');
+                break;
+              case 'null':
+                argString = [
+                  e.args['target'],
+                  e.args['level'],
+                  e.args['xoffset'],
+                  e.args['yoffset'],
+                  e.args['width'],
+                  e.args['height'],
+                  e.args['format'],
+                  e.args['type'],
+                  'null'
+                ].join(', ');
+                break;
+              default:
+                argString = [
+                  e.args['target'],
+                  e.args['level'],
+                  e.args['xoffset'],
+                  e.args['yoffset'],
+                  e.args['format'],
+                  e.args['type'],
+                  'resources[' + nextResourceId + ']'
+                ].join(', ');
+                resources.push(
+                    '{' +
+                    '  id: ' + nextResourceId + ',' +
+                    '  type: "image",' +
+                    '  mimeType: "' + e.args['dataType'] + '",' +
+                    '  data: new Uint8Array([' + e.args['pixels'] + '])' +
+                    '}');
+                nextResourceId++;
+                break;
+            }
+            break;
+          default:
+            var argTableEntry = argTable[callName];
+            if (argTableEntry) {
+              argString = argTableEntry(e.args);
+            }
+            break;
         }
-        var ctx = obj['__gl_ctx__'];
-        if (obj instanceof WebGLBuffer) {
-          ctx.deleteBuffer(obj);
-        } else if (obj instanceof WebGLFramebuffer) {
-          ctx.deleteFramebuffer(obj);
-        } else if (obj instanceof WebGLProgram) {
-          ctx.deleteProgram(obj);
-        } else if (obj instanceof WebGLRenderbuffer) {
-          ctx.deleteRenderbuffer(obj);
-        } else if (obj instanceof WebGLShader) {
-          ctx.deleteShader(obj);
-        } else if (obj instanceof WebGLTexture) {
-          ctx.deleteTexture(obj);
+
+        out('  /* ' + offsetMs + ' */ result = gl.' + callName + '(' +
+            argString + ');');
+
+        switch (callName) {
+          case 'createBuffer':
+          case 'createFramebuffer':
+          case 'createProgram':
+          case 'createRenderbuffer':
+          case 'createShader':
+          case 'createTexture':
+            out('                ' +
+                'objs[' + e.args['value'] + '] = result;');
+            out('                ' +
+                'assignObject(gl, result);');
+            break;
+          case 'getUniformLocation':
+            out('                ' +
+                'objs[' + e.args['value'] + '] = result;');
+            break;
         }
       }
+    }
+  });
 
-      replayState.frameNumber = -1;
-      replayState.ctxs = {};
-      replayState.objs = {
-        0: null
-      };
-      replayState.resources = {};
+  // Start in an intra-frame block.
+  out('intraFrame(function(ctxs, objs, resources) {');
+  out('  var result;');
+  out('  var gl = ctxs[' + currentContext + '];');
 
-      setupResources(history, replayState.resources, callback);
+  wtf.analysis.run(traceListener, data);
 
-      var canvasRoot = document.getElementById('canvasRoot');
-      canvasRoot.innerHTML = '';
-    };
+  // Cleanup last intra-frame closure.
+  out('}, [' + resources.join(', ') + ']);');
+  resources.length = 0;
+  flush();
 
-    var pendingResourceCount = 0;
-    function setupResources(history, resources, callback) {
-      function resourceCompleted(resourceId, value) {
-        resources[resourceId] = value;
-        pendingResourceCount--;
-        if (!pendingResourceCount) {
-          setStatus(true, 'Ready!');
-          if (callback) {
-            callback();
+  reset();
+};
+
+
+/**
+ * Builds a table of call names to functions that can generate code for
+ * argument objects.
+ * @return {!Object.<!function(!Object):string>} Argument table.
+ * @private
+ */
+function buildArgTable_() {
+  function trim(str) {
+    return str.replace(/^[\s\xa0]+|[\s\xa0]+$/g, '');
+  };
+
+  var signatures = [
+    'WebGLContextAttributes? getContextAttributes()',
+    'boolean isContextLost()',
+    'sequence<DOMString>? getSupportedExtensions()',
+    'object? getExtension(DOMString name)',
+    'void activeTexture(GLenum texture)',
+    'void attachShader(WebGLProgram? program, WebGLShader? shader)',
+    'void bindAttribLocation(WebGLProgram? program, GLuint index, DOMString name)',
+    'void bindBuffer(GLenum target, WebGLBuffer? buffer)',
+    'void bindFramebuffer(GLenum target, WebGLFramebuffer? framebuffer)',
+    'void bindRenderbuffer(GLenum target, WebGLRenderbuffer? renderbuffer)',
+    'void bindTexture(GLenum target, WebGLTexture? texture)',
+    'void blendColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha)',
+    'void blendEquation(GLenum mode)',
+    'void blendEquationSeparate(GLenum modeRGB, GLenum modeAlpha)',
+    'void blendFunc(GLenum sfactor, GLenum dfactor)',
+    'void blendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha)',
+    //'void bufferData(GLenum target, GLsizeiptr size, GLenum usage)',
+    //'void bufferData(GLenum target, ArrayBufferView data, GLenum usage)',
+    'void bufferData(GLenum target, ArrayBuffer? data, GLenum usage)',
+    //'void bufferSubData(GLenum target, GLintptr offset, ArrayBufferView data)',
+    'void bufferSubData(GLenum target, GLintptr offset, ArrayBuffer? data)',
+    'GLenum checkFramebufferStatus(GLenum target)',
+    'void clear(GLbitfield mask)',
+    'void clearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha)',
+    'void clearDepth(GLclampf depth)',
+    'void clearStencil(GLint s)',
+    'void colorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha)',
+    'void compileShader(WebGLShader? shader)',
+    'void compressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, ArrayBufferView data)',
+    'void compressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, ArrayBufferView data)',
+    'void copyTexImage2D(GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border)',
+    'void copyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)',
+    'WebGLBuffer? createBuffer()',
+    'WebGLFramebuffer? createFramebuffer()',
+    'WebGLProgram? createProgram()',
+    'WebGLRenderbuffer? createRenderbuffer()',
+    'WebGLShader? createShader(GLenum type)',
+    'WebGLTexture? createTexture()',
+    'void cullFace(GLenum mode)',
+    'void deleteBuffer(WebGLBuffer? value)',
+    'void deleteFramebuffer(WebGLFramebuffer? value)',
+    'void deleteProgram(WebGLProgram? value)',
+    'void deleteRenderbuffer(WebGLRenderbuffer? value)',
+    'void deleteShader(WebGLShader? value)',
+    'void deleteTexture(WebGLTexture? value)',
+    'void depthFunc(GLenum func)',
+    'void depthMask(GLboolean flag)',
+    'void depthRange(GLclampf zNear, GLclampf zFar)',
+    'void detachShader(WebGLProgram? program, WebGLShader? shader)',
+    'void disable(GLenum cap)',
+    'void disableVertexAttribArray(GLuint index)',
+    'void drawArrays(GLenum mode, GLint first, GLsizei count)',
+    'void drawElements(GLenum mode, GLsizei count, GLenum type, GLintptr offset)',
+    'void enable(GLenum cap)',
+    'void enableVertexAttribArray(GLuint index)',
+    'void finish()',
+    'void flush()',
+    'void framebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, WebGLRenderbuffer? renderbuffer)',
+    'void framebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, WebGLTexture? texture, GLint level)',
+    'void frontFace(GLenum mode)',
+    'void generateMipmap(GLenum target)',
+    'WebGLActiveInfo? getActiveAttrib(WebGLProgram? program, GLuint index)',
+    'WebGLActiveInfo? getActiveUniform(WebGLProgram? program, GLuint index)',
+    'sequence<WebGLShader>? getAttachedShaders(WebGLProgram? program)',
+    'GLint getAttribLocation(WebGLProgram? program, DOMString name)',
+    'any getBufferParameter(GLenum target, GLenum pname)',
+    'any getParameter(GLenum pname)',
+    'GLenum getError()',
+    'any getFramebufferAttachmentParameter(GLenum target, GLenum attachment, GLenum pname)',
+    'any getProgramParameter(WebGLProgram? program, GLenum pname)',
+    'DOMString? getProgramInfoLog(WebGLProgram? program)',
+    'any getRenderbufferParameter(GLenum target, GLenum pname)',
+    'any getShaderParameter(WebGLShader? shader, GLenum pname)',
+    'WebGLShaderPrecisionFormat? getShaderPrecisionFormat(GLenum shadertype, GLenum precisiontype)',
+    'DOMString? getShaderInfoLog(WebGLShader? shader)',
+    'DOMString? getShaderSource(WebGLShader? shader)',
+    'any getTexParameter(GLenum target, GLenum pname)',
+    'any getUniform(WebGLProgram? program, WebGLUniformLocation? location)',
+    'WebGLUniformLocation? getUniformLocation(WebGLProgram? program, DOMString name)',
+    'any getVertexAttrib(GLuint index, GLenum pname)',
+    'GLsizeiptr getVertexAttribOffset(GLuint index, GLenum pname)',
+    'void hint(GLenum target, GLenum mode)',
+    'GLboolean isBuffer(WebGLBuffer? buffer)',
+    'GLboolean isEnabled(GLenum cap)',
+    'GLboolean isFramebuffer(WebGLFramebuffer? framebuffer)',
+    'GLboolean isProgram(WebGLProgram? program)',
+    'GLboolean isRenderbuffer(WebGLRenderbuffer? renderbuffer)',
+    'GLboolean isShader(WebGLShader? shader)',
+    'GLboolean isTexture(WebGLTexture? texture)',
+    'void lineWidth(GLfloat width)',
+    'void linkProgram(WebGLProgram? program)',
+    'void pixelStorei(GLenum pname, GLint param)',
+    'void polygonOffset(GLfloat factor, GLfloat units)',
+    'void readPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, ArrayBufferView? pixels)',
+    'void renderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height)',
+    'void sampleCoverage(GLclampf value, GLboolean invert)',
+    'void scissor(GLint x, GLint y, GLsizei width, GLsizei height)',
+    'void shaderSource(WebGLShader? shader, DOMString source)',
+    'void stencilFunc(GLenum func, GLint ref, GLuint mask)',
+    'void stencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask)',
+    'void stencilMask(GLuint mask)',
+    'void stencilMaskSeparate(GLenum face, GLuint mask)',
+    'void stencilOp(GLenum fail, GLenum zfail, GLenum zpass)',
+    'void stencilOpSeparate(GLenum face, GLenum fail, GLenum zfail, GLenum zpass)',
+    'void texImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, ArrayBufferView? pixels)',
+    // 'void texImage2D(GLenum target, GLint level, GLenum internalformat, GLenum format, GLenum type, ImageData? pixels)',
+    // 'void texImage2D(GLenum target, GLint level, GLenum internalformat, GLenum format, GLenum type, HTMLImageElement image)',
+    // 'void texImage2D(GLenum target, GLint level, GLenum internalformat, GLenum format, GLenum type, HTMLCanvasElement canvas)',
+    // 'void texImage2D(GLenum target, GLint level, GLenum internalformat, GLenum format, GLenum type, HTMLVideoElement video)',
+    'void texParameterf(GLenum target, GLenum pname, GLfloat param)',
+    'void texParameteri(GLenum target, GLenum pname, GLint param)',
+    'void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, ArrayBufferView? pixels)',
+    // 'void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLenum format, GLenum type, ImageData? pixels)',
+    // 'void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLenum format, GLenum type, HTMLImageElement image)',
+    // 'void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLenum format, GLenum type, HTMLCanvasElement canvas)',
+    // 'void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLenum format, GLenum type, HTMLVideoElement video)',
+    'void uniform1f(WebGLUniformLocation? location, GLfloat x)',
+    'void uniform1fv(WebGLUniformLocation? location, sequence<float> v)',
+    'void uniform1i(WebGLUniformLocation? location, GLint x)',
+    'void uniform1iv(WebGLUniformLocation? location, sequence<long> v)',
+    'void uniform2f(WebGLUniformLocation? location, GLfloat x, GLfloat y)',
+    'void uniform2fv(WebGLUniformLocation? location, sequence<float> v)',
+    'void uniform2i(WebGLUniformLocation? location, GLint x, GLint y)',
+    'void uniform2iv(WebGLUniformLocation? location, sequence<long> v)',
+    'void uniform3f(WebGLUniformLocation? location, GLfloat x, GLfloat y, GLfloat z)',
+    'void uniform3fv(WebGLUniformLocation? location, sequence<float> v)',
+    'void uniform3i(WebGLUniformLocation? location, GLint x, GLint y, GLint z)',
+    'void uniform3iv(WebGLUniformLocation? location, sequence<long> v)',
+    'void uniform4f(WebGLUniformLocation? location, GLfloat x, GLfloat y, GLfloat z, GLfloat w)',
+    'void uniform4fv(WebGLUniformLocation? location, sequence<float> v)',
+    'void uniform4i(WebGLUniformLocation? location, GLint x, GLint y, GLint z, GLint w)',
+    'void uniform4iv(WebGLUniformLocation? location, sequence<long> v)',
+    'void uniformMatrix2fv(WebGLUniformLocation? location, GLboolean transpose, sequence<float> value)',
+    'void uniformMatrix3fv(WebGLUniformLocation? location, GLboolean transpose, sequence<float> value)',
+    'void uniformMatrix4fv(WebGLUniformLocation? location, GLboolean transpose, sequence<float> value)',
+    'void useProgram(WebGLProgram? program)',
+    'void validateProgram(WebGLProgram? program)',
+    'void vertexAttrib1f(GLuint indx, GLfloat x)',
+    'void vertexAttrib1fv(GLuint indx, sequence<float> values)',
+    'void vertexAttrib2f(GLuint indx, GLfloat x, GLfloat y)',
+    'void vertexAttrib2fv(GLuint indx, sequence<float> values)',
+    'void vertexAttrib3f(GLuint indx, GLfloat x, GLfloat y, GLfloat z)',
+    'void vertexAttrib3fv(GLuint indx, sequence<float> values)',
+    'void vertexAttrib4f(GLuint indx, GLfloat x, GLfloat y, GLfloat z, GLfloat w)',
+    'void vertexAttrib4fv(GLuint indx, sequence<float> values)',
+    'void vertexAttribPointer(GLuint indx, GLint size, GLenum type, GLboolean normalized, GLsizei stride, GLintptr offset)',
+    'void viewport(GLint x, GLint y, GLsizei width, GLsizei height)'
+  ];
+
+  var argTable = {};
+
+  for (var n = 0; n < signatures.length; n++) {
+    var signatureParts =
+        /^[a-zA-Z0-9?<>]+ ([a-zA-Z0-9_\.]+)(\((.*)\)$)?/.exec(signatures[n]);
+    var signatureName = signatureParts[1]; // entire name before ()
+    var signatureArgs = signatureParts[3]; // contents of () (excluding ())
+    if (signatureArgs.length) {
+      signatureArgs = signatureArgs.split(',');
+      for (var m = 0; m < signatureArgs.length; m++) {
+        var argParts = trim(signatureArgs[m]).split(' ');
+        signatureArgs[m] = {
+          type: argParts[0].replace('?', ''),
+          name: argParts[1]
+        };
+      }
+    }
+
+    argTable[signatureName] = (function(signatureName, signatureArgs) {
+      return function(args) {
+        var result = '';
+        for (var n = 0; n < signatureArgs.length; n++) {
+          var argType = signatureArgs[n].type;
+          var argName = signatureArgs[n].name;
+          var argValue = args[argName];
+          switch (argType) {
+            case 'ArrayBuffer':
+              argValue = 'new Uint8Array([' + argValue + ']).buffer';
+              break;
+            case 'ArrayBufferView':
+              argValue = 'new Uint8Array([' + argValue + '])';
+              break;
+            case 'sequence<float>':
+            case 'sequence<long>':
+              argValue = '[' + argValue + ']';
+              break;
+            case 'DOMString':
+              argValue = '"' + argValue.replace(/\n/g, '\\n') + '"';
+              break;
+            case 'GLenum':
+              // TODO(benvanik): use lookup to make a gl.ENUM_VALUE
+              break;
+            case 'WebGLBuffer':
+            case 'WebGLFramebuffer':
+            case 'WebGLProgram':
+            case 'WebGLRenderbuffer':
+            case 'WebGLShader':
+            case 'WebGLTexture':
+              argValue = 'objs[' + argValue + ']';
+              break;
+            case 'WebGLUniformLocation':
+              argValue = 'objs[' + argValue + ']';
+              break;
+          }
+          if (result.length) {
+            result += ', ' + argValue;
+          } else {
+            result = String(argValue);
           }
         }
+        return result;
       };
-      for (var n = 0; n < history.length; n++) {
-        var entry = history[n];
-        for (var i = 0; i < entry.resources.length; i++) {
-          var resource = entry.resources[i];
-          beginLoadingResource(resource, resourceCompleted);
-          pendingResourceCount++;
-        }
-      }
-      if (!pendingResourceCount) {
-        setStatus(true, 'Ready!');
-        if (callback) {
-          callback();
-        }
-      }
-    };
-    function beginLoadingResource(resource, callback) {
-      var blob = new Blob([resource.data], {
-        type: resource.mimeType
-      });
-      var url = webkitURL.createObjectURL(blob);
-      var img = new Image();
-      img.onerror = function() {
-        webkitURL.revokeObjectURL(url);
-        console.log('Unable to load resource: ', arguments);
-        callback(resource.id, null);
-      };
-      img.onload = function() {
-        webkitURL.revokeObjectURL(url);
-        callback(resource.id, img);
-      };
-      img.src = url;
-    };
+    })(signatureName, signatureArgs);
+  }
 
-    function createContext(handle, attributes) {
-      var canvas = document.createElement('canvas');
-      canvas.width = 100;
-      canvas.height = 100;
-      canvasRoot.appendChild(canvas);
-      replayState.ctxs[handle] = canvas.getContext(
-          'experimental-webgl', attributes);
-    };
+  return argTable;
+};
 
-    function reshapeContext(ctx, width, height) {
-      if (ctx.canvas.width == width &&
-          ctx.canvas.height == height) {
-        return;
-      }
-      ctx.canvas.width = width;
-      ctx.canvas.height = height;
-      ctx.viewport(0, 0, width, height);
-    };
-
-    function assignObject(ctx, obj) {
-      obj['__gl_ctx__'] = ctx;
-    };
-
-    function replay(targetFrameNumber) {
-      if (targetFrameNumber < replayState.frameNumber) {
-        reset(function() {
-          replay(targetFrameNumber);
-        });
-        return;
-      }
-      var startFrameNumber = replayState.frameNumber;
-      for (var n = 0; n < history.length; n++) {
-        var entry = history[n];
-        if (entry.frameNumber <= startFrameNumber) {
-          continue;
-        }
-        if (entry.frameNumber > targetFrameNumber) {
-          break;
-        }
-        entry.fn(replayState.ctxs, replayState.objs, replayState.resources);
-        replayState.frameNumber = entry.frameNumber;
-      }
-    };
-
-    setStatus(false, 'Loading trace script...');
-    var scriptUrl = window.location.search.substr(1);
-    if (!scriptUrl.length) {
-      window.alert('No script specified');
-      return;
-    }
-    var script = document.createElement('script');
-    script.src = scriptUrl;
-    script.onload = function() {
-      reset();
-    };
-    document.head.appendChild(script);
   </script>
 </html>
